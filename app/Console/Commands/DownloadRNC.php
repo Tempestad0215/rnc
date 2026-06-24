@@ -2,9 +2,10 @@
 
 namespace App\Console\Commands;
 
-use App\Imports\RncImport;
+use App\Models\RNC;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
@@ -37,15 +38,14 @@ class DownloadRNC extends Command
 
         // Creamos la ruta para poder almacenar los datos
         $storageDir = Storage::disk('dgii')->path('');
-        $zipPath = $storageDir.'DGII_RNC.zip';
-        $extractPath = $storageDir.'/extraido';
+        $zipPath = $storageDir . 'DGII_RNC.zip';
+        $extractPath = $storageDir . '/extraido';
 
         // Mensaje de que vas a iniciar la descarga
         $this->info('1. Iniciando la descarga desde la DGII... (Esto puede tomar un momento)');
 
         // Verificamos si la carpeta de almacenamiento existe, si no la creamos
-        if(!is_dir($storageDir))
-        {
+        if (!is_dir($storageDir)) {
             // Creamos la carpeta de almacenamiento
             mkdir($storageDir, 0755, true);
         }
@@ -58,7 +58,7 @@ class DownloadRNC extends Command
 
         // Verificamos si la descarga fue exitosa
         if (!$response->successful()) {
-            $this->error('Error al descargar el archivo: '.$response->status());
+            $this->error('Error al descargar el archivo: ' . $response->status());
             return;
         }
 
@@ -71,14 +71,11 @@ class DownloadRNC extends Command
         $zip = new ZipArchive();
 
         // Verificar que el archivo exista
-        if($zip->open($zipPath) === TRUE)
-        {
+        if ($zip->open($zipPath) === TRUE) {
             $zip->extractTo($extractPath);
             $zip->close();
             $this->info('-> Archivo ZIP descomprimido exitosamente.');
-        }
-        else
-        {
+        } else {
             $this->error('Error al descomprimir el archivo ZIP.');
             return;
         }
@@ -88,9 +85,9 @@ class DownloadRNC extends Command
         $archivoOriginal = null;
 
         // Verificar que el archivo exista
-        foreach($archivoExtraido as $archivo){
-            if(str_ends_with($archivo, '.csv') || str_ends_with($archivo, '.txt')){
-                $archivoOriginal = $extractPath.'/'.$archivo;
+        foreach ($archivoExtraido as $archivo) {
+            if (str_ends_with($archivo, '.csv') || str_ends_with($archivo, '.txt')) {
+                $archivoOriginal = $extractPath . '/' . $archivo;
                 break;
             }
         }
@@ -102,20 +99,94 @@ class DownloadRNC extends Command
         }
 
         // Ruta del archivo CSV
-        $csvFile = $extractPath.'/DGII_RNC.csv';
+        $csvFile = $extractPath . '/DGII_RNC.csv';
 
         // Renombrar el archivo
-        if(rename($archivoOriginal, $csvFile)){
+        if (rename($archivoOriginal, $csvFile)) {
             $this->info('Archivo CSV renombrado exitosamente.');
-        }else{
+        } else {
             $this->error('Error al renombrar el archivo CSV.');
         }
 
 
         // Gudar los datos
         $this->info('3. Guardando los datos en la base de datos...');
-        Excel::import(new RncImport, $csvFile);
-        $this->info('-> Datos guardados exitosamente.');
+        if (!file_exists($csvFile)) {
+            $this->error('Error: El archivo CSV no existe en la ruta.');
+            return;
+        }
+
+        $handle = fopen($csvFile, 'r');
+        if ($handle === false) {
+            $this->error('Error al abrir el archivo CSV.');
+            return;
+        }
+
+        // Saltamos la primera línea (Cabecera/Títulos)
+        fgetcsv($handle, 0);
+
+        $insertData = [];
+        $batchSize = 2500; // Enviamos de 5,000 en 5,000 a la base de datos
+        $count = 0;
+
+        DB::disableQueryLog();
+
+        // Leemos línea por línea directamente desde el disco duro
+        // El tercer parámetro es ',' (delimitador) y el cuarto es '"' (enclosure nativo)
+        while (($row = fgetcsv($handle, 0, ',', '"')) !== false) {
+            if (!isset($row[0]) || !isset($row[1])) {
+                continue;
+            }
+
+            $rnc = trim($row[0]);
+            if (empty($rnc) || $rnc === 'RNC') {
+                continue;
+            }
+
+            // Limpieza de caracteres con iconv (evita el error de bytes en Postgres)
+            $razonSocial = trim(iconv('ISO-8859-1', 'UTF-8//IGNORE', $row[1]));
+            $nombreComercial = isset($row[2]) ? trim(iconv('ISO-8859-1', 'UTF-8//IGNORE', $row[2])) : '';
+            $status = isset($row[4]) ? trim(iconv('ISO-8859-1', 'UTF-8//IGNORE', $row[4])) : '';
+            $type = isset($row[5]) ? trim(iconv('ISO-8859-1', 'UTF-8//IGNORE', $row[5])) : '';
+
+            // Forzar codificación UTF-8 limpia para PostgreSQL
+            $razonSocial = mb_convert_encoding($razonSocial, 'UTF-8', 'UTF-8');
+            $nombreComercial = mb_convert_encoding($nombreComercial, 'UTF-8', 'UTF-8');
+
+            $insertData[] = [
+                'rnc' => $rnc,
+                'razon_social' => $razonSocial,
+                'actividad' => $nombreComercial,
+                'status' => $status,
+                'type' => $type,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+
+            $count++;
+
+            if ($count % $batchSize === 0) {
+                \App\Models\RNC::upsert(
+                    $insertData,
+                    ['rnc'],
+                    ['razon_social', 'actividad', 'status', 'type', 'updated_at']
+                );
+                $insertData = [];
+                $this->info("-> Procesados {$count} registros...");
+            }
+        }
+
+        // Insertar el último bloque restante si quedó algo en el arreglo
+        if (!empty($insertData)) {
+            RNC::upsert(
+                $insertData,
+                ['rnc'],
+                ['razon_social', 'actividad', 'status', 'type', 'updated_at']
+            );
+        }
+
+        fclose($handle);
+        $this->info('-> ¡Todos los datos guardados exitosamente en la Base de Datos!');
 
     }
 }

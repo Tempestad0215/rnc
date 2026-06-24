@@ -9,7 +9,7 @@ return new class extends Migration {
     {
         Schema::create('rncs', function (Blueprint $table) {
             $table->id();
-            $table->string('rnc');
+            $table->string('rnc')->unique();
             $table->string('razon_social');
             $table->string('actividad');
             $table->string('status');

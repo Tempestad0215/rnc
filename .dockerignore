@@ -1,0 +1,23 @@
+.git
+.env
+node_modules
+vendor
+html
+
+# Ignorar los archivos temporales de la DGII y registros descargados
+storage/app/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+storage/logs/*
+
+# Si tienes archivos .txt, .csv o .zip pesados en tu raíz o storage, ignóralos:
+*.zip
+*.txt
+*.csv
+*.sql
+*.sqlite
+
+# Archivos de configuración de IDEs
+.idea
+.vscode
