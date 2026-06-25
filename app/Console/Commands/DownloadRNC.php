@@ -8,7 +8,6 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
-use Maatwebsite\Excel\Facades\Excel;
 use ZipArchive;
 
 class DownloadRNC extends Command
@@ -133,7 +132,7 @@ class DownloadRNC extends Command
 
         // Leemos línea por línea directamente desde el disco duro
         // El tercer parámetro es ',' (delimitador) y el cuarto es '"' (enclosure nativo)
-        while (($row = fgetcsv($handle, 0, ',', '"')) !== false) {
+        while (($row = fgetcsv($handle, 0)) !== false) {
             if (!isset($row[0]) || !isset($row[1])) {
                 continue;
             }
@@ -166,13 +165,13 @@ class DownloadRNC extends Command
             $count++;
 
             if ($count % $batchSize === 0) {
-                \App\Models\RNC::upsert(
+                RNC::upsert(
                     $insertData,
                     ['rnc'],
                     ['razon_social', 'actividad', 'status', 'type', 'updated_at']
                 );
                 $insertData = [];
-                $this->info("-> Procesados {$count} registros...");
+                $this->info("-> Procesados $count registros...");
             }
         }
 
